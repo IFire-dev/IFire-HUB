@@ -11,31 +11,36 @@
 </head>
 <body>
 
-  <!-- Boot sequence + history question, shown once on load -->
+  <!-- Boot sequence -->
   <div id="boot" class="boot">
     <div class="boot__inner">
       <pre id="boot-text" class="boot__text"></pre>
-      <div id="consent" class="consent" hidden>
-        <p class="consent__q">> keep chat history on this device?</p>
-        <p class="consent__info dim" id="consent-info"></p>
-        <div class="consent__btns">
-          <button class="btn btn--primary" id="consent-yes" type="button">[y] yes, save &amp; load</button>
-          <button class="btn" id="consent-no" type="button">[n] no, session only</button>
-          <button class="btn btn--danger" id="consent-wipe" type="button" hidden>[w] wipe saved history</button>
-        </div>
+    </div>
+  </div>
+
+  <!-- Sign-in (only used when Clerk is configured) -->
+  <div id="login" class="login" hidden>
+    <div class="login__box">
+      <h1 class="login__title">AI HUB</h1>
+      <p class="dim login__sub">sign in to continue</p>
+      <div id="clerk-signin"></div>
+      <p id="login-msg" class="login__msg" hidden></p>
+      <div class="login__btns">
+        <button class="btn" id="login-retry" type="button" hidden>retry</button>
+        <button class="btn btn--danger" id="login-signout" type="button" hidden>sign out</button>
       </div>
     </div>
   </div>
 
-  <!-- Main hub, hidden until boot + question finish -->
+  <!-- Main hub -->
   <div id="hub" class="hub" hidden>
 
     <header class="titlebar">
-      <div class="titlebar__dots" aria-hidden="true">
-        <span></span><span></span><span></span>
-      </div>
+      <div class="titlebar__dots" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="titlebar__path">guest@ai-hub:~$</div>
       <div class="titlebar__persist" id="persist-indicator"></div>
+      <button class="btn titlebar__gear" id="settings-btn" type="button" title="settings">settings</button>
+      <div id="user-btn" class="titlebar__user"></div>
       <div class="titlebar__clock" id="clock"></div>
     </header>
 
@@ -72,16 +77,23 @@
         <span class="launch-view__breadcrumb" id="chat-breadcrumb"></span>
         <button class="btn" id="chat-new" type="button">new chat</button>
       </div>
+      <div class="perf" id="perf-tab">
+        <div class="perf__chips" id="perf-chips"></div>
+        <div class="perf__btns">
+          <button class="btn" id="perf-recheck" type="button" title="check now whether this model answers">recheck</button>
+          <button class="btn" id="perf-config" type="button" title="choose what is shown here">configure</button>
+        </div>
+      </div>
       <div class="chat-view__log" id="chat-log"></div>
       <div class="composer-wrap">
-      <div class="attach-row" id="attach-row" hidden></div>
-      <div class="composer">
-        <input type="file" id="chat-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
-        <button class="btn" id="chat-attach" type="button" title="attach image (or paste one)" hidden>img</button>
-        <textarea id="chat-input" rows="2" placeholder="message... (enter = send, shift+enter = newline)"></textarea>
-        <button class="btn btn--primary" id="chat-send" type="button">send</button>
-        <button class="btn btn--danger" id="chat-stop" type="button" hidden>stop</button>
-      </div>
+        <div class="attach-row" id="attach-row" hidden></div>
+        <div class="composer">
+          <input type="file" id="chat-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+          <button class="btn" id="chat-attach" type="button" title="attach image (or paste one)" hidden>img</button>
+          <textarea id="chat-input" rows="2" placeholder="message... (enter = send, shift+enter = newline)"></textarea>
+          <button class="btn btn--primary" id="chat-send" type="button">send</button>
+          <button class="btn btn--danger" id="chat-stop" type="button" hidden>stop</button>
+        </div>
       </div>
     </section>
 
@@ -92,20 +104,65 @@
         <span class="launch-view__breadcrumb">ai-hub &gt; virustotal</span>
         <span class="dim vt-quota" id="vt-quota"></span>
       </div>
-      <div class="vt-body">
-        <div class="vt-drop" id="vt-drop" tabindex="0" role="button" aria-label="choose a file to check">
-          <div>drop a file here, or click to choose</div>
-          <div class="dim">hash-first: the file is hashed in your browser and only the hash is looked up.<br>nothing is uploaded unless you press upload.</div>
+      <div class="vt-scroll">
+        <div class="vt-body">
+          <div class="vt-drop" id="vt-drop" tabindex="0" role="button" aria-label="choose a file to check">
+            <div>drop a file here, or click to choose</div>
+            <div class="dim">hash-first: the file is hashed in your browser and only the hash is looked up.<br>nothing is uploaded unless you press upload.</div>
+          </div>
+          <input type="file" id="vt-file" hidden>
+          <div class="vt-lookup">
+            <input id="vt-input" type="text" spellcheck="false" autocomplete="off" placeholder="or paste a hash (md5 / sha1 / sha256) or a URL">
+            <button class="btn btn--primary" id="vt-go" type="button">look up</button>
+          </div>
+          <div id="vt-out" class="vt-out"></div>
         </div>
-        <input type="file" id="vt-file" hidden>
-        <div class="vt-lookup">
-          <input id="vt-input" type="text" spellcheck="false" autocomplete="off" placeholder="or paste a hash (md5 / sha1 / sha256) or a URL">
-          <button class="btn btn--primary" id="vt-go" type="button">look up</button>
-        </div>
-        <div id="vt-out" class="vt-out"></div>
       </div>
     </section>
 
+  </div>
+
+  <!-- Settings -->
+  <div id="settings" class="modal" hidden>
+    <div class="modal__box" role="dialog" aria-label="settings">
+      <div class="modal__head">
+        <h2>settings</h2>
+        <button class="btn" id="settings-close" type="button">close</button>
+      </div>
+
+      <section class="modal__sec">
+        <h3>chat history</h3>
+        <label class="switch"><input type="checkbox" id="set-save"><span class="switch__ui"></span><span>save my chat history</span></label>
+        <p class="dim" id="save-note"></p>
+        <div class="modal__row">
+          <button class="btn btn--danger" id="set-delete" type="button">delete saved history</button>
+          <button class="btn" id="set-import" type="button" hidden>import old browser history</button>
+        </div>
+      </section>
+
+      <section class="modal__sec" id="set-perf-sec">
+        <h3>performance tab</h3>
+        <p class="dim">choose what appears above every chat.</p>
+        <div class="checks" id="set-perf"></div>
+      </section>
+
+      <section class="modal__sec">
+        <h3>layout</h3>
+        <label class="switch"><input type="checkbox" id="set-wide"><span class="switch__ui"></span><span>use the full width of the page</span></label>
+      </section>
+
+      <section class="modal__sec">
+        <h3>model checks</h3>
+        <p class="dim" id="set-health"></p>
+      </section>
+
+      <section class="modal__sec">
+        <h3>account</h3>
+        <p id="set-account"></p>
+        <p class="dim" id="set-account-hint"></p>
+        <button class="btn" id="set-copyid" type="button" hidden>copy my id</button>
+      </section>
+    </div>
   </div>
 
 <script src="app.js"></script>

@@ -4,6 +4,9 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const MODELS = require('./models');
+const auth = require('./auth');
+const userdata = require('./userdata');
+const { createHealth } = require('./health');
 
 // ---- tiny .env loader (no extra dependency) ----
 try {
@@ -27,6 +30,10 @@ const VT_PER_MIN = Number(process.env.VT_PER_MIN) || 4;     // free tier: 4 requ
 const VT_DAILY = 500;                                       // free tier: 500 requests / day
 const VT_MAX_UPLOAD = 32 * 1024 * 1024;                     // free tier direct upload cap
 const MAX_EVENTS = 5000;
+const USER_CHAT_PER_MIN = Number(process.env.USER_CHAT_PER_MIN) || 10;  // per non-admin person
+const USER_VT_PER_DAY = Number(process.env.USER_VT_PER_DAY) || 60;      // per non-admin person
+const HEALTH_ENABLED = process.env.HEALTH_ENABLED !== '0';
+const HEALTH_INTERVAL_MS = Math.max(5000, (Number(process.env.HEALTH_INTERVAL_MIN) || 5) * 60000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dayKey = (d = new Date()) => d.toLocaleDateString('sv'); // local YYYY-MM-DD
@@ -36,10 +43,10 @@ const dayKey = (d = new Date()) => d.toLocaleDateString('sv'); // local YYYY-MM-
 // =====================================================================
 const DATA_DIR = path.join(__dirname, 'data');
 const STATS_FILE = path.join(DATA_DIR, 'stats.json');
-let stats = { chat: [], vt: [], vtDaily: {} };
+let stats = { chat: [], vt: [], vtDaily: {}, healthDaily: {} };
 try {
   const loaded = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
-  stats = { chat: loaded.chat || [], vt: loaded.vt || [], vtDaily: loaded.vtDaily || {} };
+  stats = { chat: loaded.chat || [], vt: loaded.vt || [], vtDaily: loaded.vtDaily || {}, healthDaily: loaded.healthDaily || {} };
 } catch { /* first run */ }
 
 let saveTimer = null;
@@ -60,21 +67,52 @@ function pushEvent(list, ev) {
 }
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { flushStats(); process.exit(0); });
 
-const recordChat = (e) => pushEvent(stats.chat, { ts: Date.now(), ...e });
-const recordVt = (kind, extra = {}) => pushEvent(stats.vt, { ts: Date.now(), kind, ...extra });
+const recordChat = (e) => pushEvent(stats.chat, { ts: Date.now(), uid: auth.currentUid(), ...e });
+const recordVt = (kind, extra = {}) => pushEvent(stats.vt, { ts: Date.now(), uid: auth.currentUid(), kind, ...extra });
+const healthToday = () => stats.healthDaily[dayKey()] || 0;
+function countHealthCheck() {
+  stats.healthDaily[dayKey()] = healthToday() + 1;
+  for (const k of Object.keys(stats.healthDaily).sort().slice(0, -14)) delete stats.healthDaily[k];
+  persistSoon();
+}
+
+// tiny in-memory per-person limiters (shared API keys: one person shouldn't starve the others)
+const chatHits = new Map();
+function chatRateOk(uid) {
+  const now = Date.now();
+  const arr = (chatHits.get(uid) || []).filter((t) => now - t < 60000);
+  if (arr.length >= USER_CHAT_PER_MIN) { chatHits.set(uid, arr); return false; }
+  arr.push(now); chatHits.set(uid, arr); return true;
+}
+const vtUserDay = new Map(); // `${uid}|${day}` -> count
 
 // =====================================================================
 const app = express();
-app.use(express.json({ limit: '25mb' })); // chat images arrive as base64
-
-// Only answer requests addressed to localhost (blocks DNS-rebinding tricks against your keys).
-const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]',
-  ...(process.env.ALLOWED_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean)]);
-app.use('/api', (req, res, next) => {
-  const host = (req.headers.host || '').replace(/:\d+$/, '');
-  if (!ALLOWED_HOSTS.has(host)) return res.status(403).json({ error: 'Host not allowed.' });
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
   next();
 });
+app.use(express.json({ limit: '25mb' })); // chat images arrive as base64
+
+// Only answer requests addressed to a host you listed (localhost by default).
+// Blocks DNS-rebinding tricks against your keys. Add your public/Tailscale name to ALLOWED_HOSTS.
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]',
+  ...(process.env.ALLOWED_HOSTS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)]);
+app.use('/api', (req, res, next) => {
+  const host = (req.headers.host || '').replace(/:\d+$/, '').toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) return res.status(403).json({ error: `Host "${host}" is not allowed. Add it to ALLOWED_HOSTS in .env.` });
+  next();
+});
+
+// Public: the browser needs this to know whether to show a login (it contains no secrets).
+app.get('/api/config', (req, res) => res.json(auth.publicConfig()));
+
+// Everything below needs a signed-in user (or local mode).
+auth.setup(app);
+app.use('/api', auth.requireUser);
 
 // =====================================================================
 // Models + chat (NVIDIA NIM)
@@ -106,6 +144,9 @@ app.post('/api/chat', async (req, res) => {
   if (!m) return res.status(400).json({ error: 'Unknown model.' });
   if (!m.apiReady) return res.status(409).json({ error: 'API is not open for this model yet (preview only).' });
   if (!KEY) return res.status(500).json({ error: 'NVIDIA_API_KEY is missing. Put it in .env and restart the server.' });
+  if (!req.user.isAdmin && !chatRateOk(req.user.id)) {
+    return res.status(429).json({ error: `Slow down: the limit is ${USER_CHAT_PER_MIN} messages per minute per person.` });
+  }
 
   if (!Array.isArray(messages) || messages.length === 0 || messages.length > 100) {
     return res.status(400).json({ error: 'Bad messages array.' });
@@ -311,6 +352,17 @@ function summarize(kind, obj, meta = {}) {
 const HASH_RE = /^([a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const vtErr = (res, e) => res.status(e.status || 500).json({ error: e.message || 'VirusTotal error.' });
 
+// Per-person daily cap on VirusTotal requests (the free key is shared by everyone).
+app.use('/api/vt', (req, res, next) => {
+  if (req.user.isAdmin || req.path === '/status') return next();
+  const key = `${req.user.id}|${dayKey()}`;
+  const n = (vtUserDay.get(key) || 0) + 1;
+  for (const k of vtUserDay.keys()) if (!k.endsWith(`|${dayKey()}`)) vtUserDay.delete(k);
+  if (n > USER_VT_PER_DAY) return res.status(429).json({ error: `Your daily VirusTotal limit (${USER_VT_PER_DAY} requests) is used up.` });
+  vtUserDay.set(key, n);
+  next();
+});
+
 app.get('/api/vt/status', (req, res) => {
   res.json({ keyConfigured: Boolean(VT_KEY), usedToday: vtUsedToday(), dailyLimit: VT_DAILY, perMinute: VT_PER_MIN, maxUploadBytes: VT_MAX_UPLOAD });
 });
@@ -426,8 +478,11 @@ const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / a
 app.get('/api/stats', (req, res) => {
   const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 7));
   const since = Date.now() - days * 86400000;
-  const chats = stats.chat.filter((e) => e.ts >= since);
-  const vts = stats.vt.filter((e) => e.ts >= since);
+  // Admins see everyone by default (?scope=me for just themselves); everyone else sees only their own.
+  const scope = (req.user.isAdmin && req.query.scope !== 'me') ? 'all' : 'me';
+  const mine = (e) => scope === 'all' || (e.uid || 'local') === req.user.id;
+  const chats = stats.chat.filter((e) => e.ts >= since && mine(e));
+  const vts = stats.vt.filter((e) => e.ts >= since && mine(e));
   const tokens = (e) => e.tokensOut || Math.round((e.charsOut || 0) / 4);
 
   const names = Object.fromEntries(MODELS.map((m) => [m.id, m.name]));
@@ -457,6 +512,8 @@ app.get('/api/stats', (req, res) => {
 
   res.json({
     days,
+    scope,
+    healthChecksToday: healthToday(),
     totals: {
       chats: chats.length,
       ok: chats.filter((e) => e.ok).length,
@@ -480,9 +537,66 @@ app.get('/api/stats', (req, res) => {
 });
 
 app.delete('/api/stats', (req, res) => {
-  stats = { chat: [], vt: [], vtDaily: stats.vtDaily }; // keep the quota counter honest
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Only the hub owner can wipe stats.' });
+  stats = { chat: [], vt: [], vtDaily: stats.vtDaily, healthDaily: stats.healthDaily }; // keep quota counters honest
   flushStats();
   res.json({ ok: true });
+});
+
+// =====================================================================
+// Account: who am I, settings, saved chat history (stored per account on this server)
+// =====================================================================
+const store = userdata.create(path.join(DATA_DIR, 'users'), MODELS.map((m) => m.id));
+
+app.get('/api/me', (req, res) => res.json({ id: req.user.id, isAdmin: req.user.isAdmin, mode: auth.MODE }));
+
+app.get('/api/user-data', async (req, res) => {
+  try { res.json(await store.getAll(req.user.id)); }
+  catch { res.status(500).json({ error: 'Could not read your saved data.' }); }
+});
+
+app.put('/api/settings', async (req, res) => {
+  try { res.json(await store.mergeSettings(req.user.id, req.body)); }
+  catch { res.status(500).json({ error: 'Could not save settings.' }); }
+});
+
+app.put('/api/history/:model(*)', async (req, res) => {
+  const model = req.params.model;
+  if (!store.isModel(model)) return res.status(400).json({ error: 'Unknown model.' });
+  try {
+    const ok = await store.putThread(req.user.id, model, req.body && req.body.messages);
+    if (!ok) return res.status(400).json({ error: 'Bad or too-large history.' });
+    res.json({ ok: true });
+  } catch { res.status(500).json({ error: 'Could not save history.' }); }
+});
+
+app.delete('/api/history', async (req, res) => {
+  try { await store.clearHistory(req.user.id); res.json({ ok: true }); }
+  catch { res.status(500).json({ error: 'Could not delete history.' }); }
+});
+
+// =====================================================================
+// Model health (background checks)
+// =====================================================================
+const health = createHealth({
+  models: MODELS,
+  getKey: () => KEY,
+  url: NIM_URL,
+  intervalMs: HEALTH_INTERVAL_MS,
+  timeoutMs: (Number(process.env.HEALTH_TIMEOUT_S) || 30) * 1000,
+  slowMs: (Number(process.env.HEALTH_SLOW_S) || 8) * 1000,
+  confirmMs: Number(process.env.HEALTH_CONFIRM_MS) || 30000,
+  onCheck: countHealthCheck,
+});
+
+app.get('/api/health', (req, res) => res.json({ enabled: HEALTH_ENABLED, ...health.snapshot() }));
+
+app.post('/api/health/recheck/:model(*)', async (req, res) => {
+  if (!KEY) return res.status(500).json({ error: 'NVIDIA_API_KEY is missing.' });
+  const r = await health.recheck(req.params.model);
+  if (!r) return res.status(404).json({ error: 'Unknown or preview-only model.' });
+  if (r.cooldown) return res.status(429).json({ error: 'Checked a moment ago. Try again in 30 seconds.' });
+  res.json(r);
 });
 
 // ---- static + SPA fallback ----
@@ -490,7 +604,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.listen(PORT, HOST, () => {
+  if (HEALTH_ENABLED && KEY) health.start();
   console.log(`AI Hub on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   console.log(KEY ? 'NVIDIA key loaded.' : 'WARNING: NVIDIA_API_KEY not set — model chat will not work.');
   console.log(VT_KEY ? 'VirusTotal key loaded.' : 'Note: VT_API_KEY not set — VirusTotal scanner disabled.');
+  console.log(auth.MODE === 'clerk' ? 'Login: Clerk (sign-in required).' : 'Login: off (local single-user mode).');
+  console.log(HEALTH_ENABLED && KEY ? `Model health checks: on startup, then every ${HEALTH_INTERVAL_MS / 60000} min.` : 'Model health checks: off.');
 });

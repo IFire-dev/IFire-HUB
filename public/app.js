@@ -1,4 +1,4 @@
-// app.js — AI Hub client logic
+// app.js — AI Hub client
 
 // ---------- config ----------
 // Link/iframe tools. Add more here.
@@ -8,141 +8,364 @@
 const TOOLS = [
   { id: 'thesearch', name: 'TheSearch', tagline: 'self-hosted search engine', url: 'https://thesearch.onrender.com', embed: true, check: true },
   { id: 'virustotal', name: 'VirusTotal', tagline: 'check files, hashes & URLs (hash-first, no upload by default)', builtin: 'vt' },
-  { id: 'github', name: 'GitHub', tagline: 'IFire-dev — repos & projects', url: 'https://github.com/IFire-dev', embed: false, check: false },
+  { id: 'github', name: 'GitHub', tagline: 'IFire-dev \u2014 repos & projects', url: 'https://github.com/IFire-dev', embed: false, check: false },
 ];
 
-const HISTORY_KEY = 'aihub.history.v1';
 const MAX_CONTEXT_MSGS = 30;   // how many recent messages are sent to the model
-const MAX_STORED_MSGS = 200;   // per model thread, when saving to disk
+const MAX_IMAGES = 4;
+const OLD_LS_KEY = 'aihub.history.v1';   // history kept by versions before 2.0 (browser storage)
+
+// What the performance tab can show (the user picks in Settings).
+const PERF_DEFS = [
+  { key: 'health', label: 'model status (from background checks)' },
+  { key: 'ttfb', label: 'first token time (last reply)' },
+  { key: 'total', label: 'total time (last reply)' },
+  { key: 'tps', label: 'speed in tokens/s (last reply, estimate)' },
+  { key: 'ctx', label: 'context used (estimate)' },
+  { key: 'tokens', label: 'tokens generated (last reply, estimate)' },
+  { key: 'avgTtfb', label: 'average first token time (this session)' },
+  { key: 'session', label: 'requests and errors (this session)' },
+];
+const DEFAULT_PERF = { health: true, ttfb: true, total: true, tps: true, ctx: true, tokens: false, avgTtfb: false, session: false };
 
 // ---------- elements ----------
 const $ = (id) => document.getElementById(id);
-const bootEl = $('boot'), bootTextEl = $('boot-text');
-const consentEl = $('consent'), consentInfoEl = $('consent-info');
+const bootEl = $('boot'), bootTextEl = $('boot-text'), loginEl = $('login');
 const hubEl = $('hub'), sectionsEl = $('sections'), toolCountEl = $('tool-count');
-const clockEl = $('clock'), persistEl = $('persist-indicator');
-const gridView = $('grid-view'), launchView = $('launch-view'), chatView = $('chat-view');
+const clockEl = $('clock'), persistEl = $('persist-indicator'), settingsEl = $('settings');
+const gridView = $('grid-view'), launchView = $('launch-view'), chatView = $('chat-view'), vtView = $('vt-view');
 const backBtn = $('back-btn'), breadcrumbEl = $('breadcrumb'), newTabBtn = $('newtab-btn');
 const toolFrame = $('tool-frame'), fallbackEl = $('fallback'), fallbackLink = $('fallback-link');
-const chatBack = $('chat-back'), chatNew = $('chat-new'), chatBreadcrumb = $('chat-breadcrumb');
 const statsPanel = $('stats-panel');
-const vtView = $('vt-view'), vtBack = $('vt-back'), vtQuota = $('vt-quota'), vtDrop = $('vt-drop');
+const vtBack = $('vt-back'), vtQuota = $('vt-quota'), vtDrop = $('vt-drop');
 const vtFile = $('vt-file'), vtInput = $('vt-input'), vtGo = $('vt-go'), vtOut = $('vt-out');
 const chatAttach = $('chat-attach'), chatFile = $('chat-file'), attachRow = $('attach-row');
+const chatBack = $('chat-back'), chatNew = $('chat-new'), chatBreadcrumb = $('chat-breadcrumb');
 const chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send'), chatStop = $('chat-stop');
+const perfChips = $('perf-chips'), perfRecheck = $('perf-recheck'), perfConfig = $('perf-config');
 
-let frameTimeout = null;
-let persist = false;       // set by the start-page question
-let history = {};          // { [modelId]: [{role, content}] }
+// ---------- state ----------
+let authMode = 'local';
+let me = { id: 'local', isAdmin: true, mode: 'local' };
+let settings = { saveHistory: true, fullWidth: true, perf: { ...DEFAULT_PERF } };
+let history = {};          // { [modelId]: [{role, content, images?, imageCount?, reasoning?}] }
 let models = [];
 let keyConfigured = false;
-let current = null;        // model currently open in chat
+let vtStatus = { keyConfigured: false };
+let healthData = null;
+let modelCards = [];       // cards whose health dot updates live
+let current = null;        // model open in chat
 let streaming = false;
 let abortCtrl = null;
-let vtStatus = { keyConfigured: false };
+let pendingImages = [];    // data URLs for the next message (never saved)
 let statsDays = 7;
-let pendingImages = [];   // data URLs attached to the next message (never saved to disk)
-const MAX_IMAGES = 4;
+let statsScope = 'all';
+let persistFailed = false;
+let frameTimeout = null;
+let perfNote = '';
+const sessionPerf = {};    // per model, this page session
 
-// ---------- tiny helpers ----------
+// ---------- helpers ----------
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== undefined) n.textContent = text;
   return n;
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const fmtNum = (n) => Number(n || 0).toLocaleString();
+const fmtMs = (ms) => (ms == null ? '\u2013' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
-// ---------- history storage ----------
-function readSaved() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || {}; } catch { return {}; }
-}
-function countSaved(obj) {
-  return Object.values(obj).reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0);
-}
-function saveHistory() {
-  if (!persist) return;
-  try {
-    const trimmed = {};
-    for (const [k, v] of Object.entries(history)) {
-      trimmed[k] = v.slice(-MAX_STORED_MSGS).map(({ role, content, images, imageCount }) =>
-        ({ role, content, imageCount: imageCount || (images ? images.length : 0) || undefined }));
-    }
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed));
-    setPersistLabel(true);
-  } catch {
-    persistEl.textContent = 'history: SAVE FAILED (storage full/blocked)';
-    persistEl.className = 'titlebar__persist';
+// ---------- fetch wrapper: attaches the Clerk session token to /api calls ----------
+const rawFetch = window.fetch.bind(window);
+let signedOutHandled = false;
+window.fetch = async (input, init = {}) => {
+  const isApi = typeof input === 'string' && input.startsWith('/api');
+  if (isApi && authMode === 'clerk') {
+    let token = null;
+    try { token = window.Clerk && window.Clerk.session ? await window.Clerk.session.getToken() : null; } catch { token = null; }
+    if (token) init = { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } };
   }
-}
-function setPersistLabel(ok = true) {
-  persistEl.textContent = persist ? 'history: saved on this device' : 'history: session only';
-  persistEl.className = 'titlebar__persist' + (persist && ok ? ' titlebar__persist--on' : '');
-}
+  const res = await rawFetch(input, init);
+  if (isApi && authMode === 'clerk' && res.status === 401 && !signedOutHandled) {
+    signedOutHandled = true;
+    location.reload();   // session expired: the sign-in screen comes back after reload
+  }
+  return res;
+};
 
-// ---------- boot sequence + history question ----------
-const BOOT_LINES = [
-  '> AI HUB v1.3.0',
-  '> booting dashboard...',
-  `> registered tools: ${TOOLS.length}`,
-  '> ready.',
-];
+// =====================================================================
+// boot + auth
+// =====================================================================
+const BOOT_LINES = ['> AI HUB v2.0.0', '> booting dashboard...', `> registered tools: ${TOOLS.length}`, '> ready.'];
 
 function runBoot() {
-  let i = 0;
-  const type = () => {
-    if (i >= BOOT_LINES.length) { setTimeout(askConsent, 250); return; }
-    bootTextEl.textContent += (i > 0 ? '\n' : '') + BOOT_LINES[i];
-    i += 1;
-    setTimeout(type, 220);
-  };
-  type();
+  return new Promise((resolve) => {
+    let i = 0;
+    const type = () => {
+      if (i >= BOOT_LINES.length) { setTimeout(resolve, 250); return; }
+      bootTextEl.textContent += (i > 0 ? '\n' : '') + BOOT_LINES[i];
+      i += 1;
+      setTimeout(type, 220);
+    };
+    type();
+  });
 }
-
-function askConsent() {
-  const saved = readSaved();
-  const n = countSaved(saved);
-  consentInfoEl.textContent = n
-    ? `found ${n} saved message${n === 1 ? '' : 's'} from earlier. "no" leaves them untouched on disk but does not load or add to them.`
-    : 'nothing saved yet. "yes" stores chats in this browser only (localStorage), never on a server.';
-  $('consent-wipe').hidden = n === 0;
-  consentEl.hidden = false;
-
-  const choose = (yes) => {
-    document.removeEventListener('keydown', onKey);
-    persist = yes;
-    history = yes ? saved : {};
-    finishBoot();
-  };
-  const wipe = () => {
-    try { localStorage.removeItem(HISTORY_KEY); } catch { /* ignore */ }
-    consentInfoEl.textContent = 'saved history wiped.';
-    $('consent-wipe').hidden = true;
-    saved && Object.keys(saved).forEach((k) => delete saved[k]);
-  };
-  function onKey(e) {
-    const k = e.key.toLowerCase();
-    if (k === 'y') choose(true);
-    else if (k === 'n') choose(false);
-    else if (k === 'w' && !$('consent-wipe').hidden) wipe();
-  }
-  $('consent-yes').onclick = () => choose(true);
-  $('consent-no').onclick = () => choose(false);
-  $('consent-wipe').onclick = wipe;
-  document.addEventListener('keydown', onKey);
-}
-
-function finishBoot() {
-  setPersistLabel();
+function hideBoot() {
   bootEl.classList.add('boot--done');
-  setTimeout(() => { bootEl.hidden = true; hubEl.hidden = false; }, 400);
+  setTimeout(() => { bootEl.hidden = true; }, 400);
 }
 
-// ---------- clock ----------
-function tickClock() {
-  clockEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
+function loadScript(src, attrs = {}) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.crossOrigin = 'anonymous';
+    Object.entries(attrs).forEach(([k, v]) => s.setAttribute(k, v));
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`could not load ${new URL(src).host}`));
+    document.head.appendChild(s);
+  });
 }
 
-// ---------- cards ----------
+// Follows Clerk's current script-tag quickstart for plain JavaScript.
+async function loadClerk(publishableKey) {
+  const domain = atob(publishableKey.split('_')[2]).slice(0, -1);   // Frontend API domain is inside the key
+  const work = (async () => {
+    await loadScript(`https://${domain}/npm/@clerk/ui@1/dist/ui.browser.js`);
+    await loadScript(`https://${domain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': publishableKey });
+    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+  })();
+  await Promise.race([work, sleep(20000).then(() => { throw new Error('timed out'); })]);
+}
+
+const CLERK_APPEARANCE = {
+  variables: {
+    colorPrimary: '#ffb000', colorBackground: '#14100a', colorText: '#f2c879',
+    colorTextSecondary: '#a3803f', colorInputBackground: '#0b0904', colorInputText: '#f2c879',
+    fontFamily: "'JetBrains Mono', 'Courier New', monospace", borderRadius: '0px',
+  },
+};
+
+function showLogin({ msg, retry, signout, hideForm } = {}) {
+  hideBoot();
+  hubEl.hidden = true;
+  loginEl.hidden = false;
+  $('clerk-signin').hidden = Boolean(hideForm);
+  const m = $('login-msg');
+  m.hidden = !msg;
+  m.textContent = msg || '';
+  $('login-retry').hidden = !retry;
+  $('login-signout').hidden = !signout;
+}
+$('login-retry').addEventListener('click', () => location.reload());
+$('login-signout').addEventListener('click', async () => {
+  try { await window.Clerk.signOut(); } catch { /* ignore */ }
+  location.reload();
+});
+
+async function ensureSignedIn() {
+  try { await loadClerk(cfgKey); } catch (e) {
+    showLogin({ msg: `Could not load the sign-in (${e.message}). It needs an internet connection.`, retry: true, hideForm: true });
+    return false;
+  }
+  if (!window.Clerk.isSignedIn) {
+    showLogin({});
+    window.Clerk.mountSignIn($('clerk-signin'), { appearance: CLERK_APPEARANCE });
+    await new Promise((resolve) => {
+      let unsub;   // declared first: Clerk may call the listener immediately
+      const check = () => { if (window.Clerk.isSignedIn) { resolve(); return true; } return false; };
+      unsub = window.Clerk.addListener(() => { if (check() && typeof unsub === 'function') unsub(); });
+    });
+    try { window.Clerk.unmountSignIn($('clerk-signin')); } catch { /* ignore */ }
+  }
+  return true;
+}
+
+let cfgKey = null;
+async function startApp() {
+  let cfg;
+  try { cfg = await (await fetch('/api/config')).json(); } catch {
+    bootTextEl.textContent += '\n> server unreachable. is it running?';
+    return;
+  }
+  authMode = cfg.mode;
+  cfgKey = cfg.clerkPublishableKey;
+  if (authMode === 'clerk' && !(await ensureSignedIn())) return;
+
+  const meRes = await fetch('/api/me');
+  if (meRes.status === 403) {
+    const j = await meRes.json().catch(() => ({}));
+    return showLogin({ msg: `${j.error || 'Not allowed.'}\nYour id: ${j.userId || '?'}`, signout: true, hideForm: true });
+  }
+  if (!meRes.ok) return showLogin({ msg: 'Could not reach the hub server.', retry: true, hideForm: true });
+  me = await meRes.json();
+
+  await loadUserData();
+  applySettings();
+  hideBoot();
+  loginEl.hidden = true;
+  hubEl.hidden = false;
+  if (authMode === 'clerk') { try { window.Clerk.mountUserButton($('user-btn'), { appearance: CLERK_APPEARANCE }); } catch { /* ignore */ } }
+  loadModels();
+  loadHealth();
+  setInterval(loadHealth, 60000);
+}
+
+// =====================================================================
+// per-account settings + history (stored on the server)
+// =====================================================================
+function normSettings(s) {
+  return { saveHistory: true, fullWidth: true, ...(s || {}), perf: { ...DEFAULT_PERF, ...((s && s.perf) || {}) } };
+}
+async function loadUserData() {
+  try {
+    const d = await (await fetch('/api/user-data')).json();
+    settings = normSettings(d.settings);
+    history = d.history || {};
+  } catch { /* keep defaults */ }
+}
+
+let settingsTimer = null;
+function saveSettingsSoon() {
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(() => {
+    fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }).catch(() => {});
+  }, 400);
+}
+
+function updatePersistLabel() {
+  persistEl.textContent = persistFailed ? 'history: SAVE FAILED' : settings.saveHistory ? 'history: saved on server' : 'history: not saved';
+  persistEl.className = `titlebar__persist${settings.saveHistory && !persistFailed ? ' titlebar__persist--on' : ''}`;
+}
+function applySettings() {
+  document.body.classList.toggle('narrow', !settings.fullWidth);
+  updatePersistLabel();
+  if (current) renderPerf();
+}
+
+async function putThread(modelId) {
+  const msgs = (history[modelId] || []).map(({ role, content, images, imageCount }) => ({
+    role, content, imageCount: imageCount || (images ? images.length : 0) || undefined,
+  }));
+  try {
+    const r = await fetch(`/api/history/${modelId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: msgs }) });
+    persistFailed = !r.ok;
+  } catch { persistFailed = true; }
+  updatePersistLabel();
+}
+const saveTimers = {};
+function saveThreadSoon(modelId) {
+  if (!settings.saveHistory) return;
+  clearTimeout(saveTimers[modelId]);
+  saveTimers[modelId] = setTimeout(() => putThread(modelId), 500);
+}
+
+// =====================================================================
+// settings modal
+// =====================================================================
+function readOldLocal() {
+  try { return JSON.parse(localStorage.getItem(OLD_LS_KEY)) || {}; } catch { return {}; }
+}
+function countMsgs(o) { return Object.values(o).reduce((n, a) => n + (Array.isArray(a) ? a.length : 0), 0); }
+
+function openSettings(scrollToPerf) {
+  $('set-save').checked = settings.saveHistory;
+  $('set-wide').checked = settings.fullWidth;
+  $('save-note').textContent = authMode === 'clerk'
+    ? 'Saved in your own file on the hub\u2019s server, so it follows you to other devices. The person who runs the hub can read it.'
+    : 'Saved in data/users/local.json on this PC. Turning this off stops new saving; it does not delete what is already saved.';
+
+  const box = $('set-perf');
+  box.textContent = '';
+  PERF_DEFS.forEach((d) => {
+    const lab = el('label', 'check');
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = Boolean(settings.perf[d.key]);
+    cb.addEventListener('change', () => { settings.perf[d.key] = cb.checked; renderPerf(); saveSettingsSoon(); });
+    lab.appendChild(cb); lab.appendChild(el('span', '', d.label));
+    box.appendChild(lab);
+  });
+
+  const hd = healthData;
+  $('set-health').textContent = !hd ? 'loading\u2026'
+    : hd.enabled === false ? 'Background checks are off (HEALTH_ENABLED=0 in .env).'
+      : `Each model gets one tiny test request at startup and then every ${Math.round(hd.intervalMs / 60000 * 10) / 10} min `
+        + '(set HEALTH_INTERVAL_MIN in .env). Two failures in a row mark a model "down". '
+        + (hd.lastCycle ? `Last full round: ${new Date(hd.lastCycle).toLocaleTimeString()}.` : 'First round has not finished yet.');
+
+  $('set-account').textContent = authMode === 'clerk'
+    ? `signed in \u00b7 ${me.isAdmin ? 'owner (admin)' : 'member'} \u00b7 id: ${me.id}`
+    : 'local mode: no login, everything stays on this PC.';
+  $('set-account-hint').textContent = authMode === 'clerk' && !me.isAdmin
+    ? 'To become the owner, add this id to ADMIN_USER_IDS in the server\u2019s .env and restart it.' : '';
+  $('set-copyid').hidden = authMode !== 'clerk';
+
+  const old = readOldLocal();
+  const n = countMsgs(old);
+  $('set-import').hidden = n === 0;
+  $('set-import').textContent = `import old browser history (${n} messages)`;
+
+  settingsEl.hidden = false;
+  if (scrollToPerf) $('set-perf-sec').scrollIntoView({ block: 'start' });
+}
+function closeSettings() { settingsEl.hidden = true; }
+
+$('settings-btn').addEventListener('click', () => openSettings(false));
+$('settings-close').addEventListener('click', closeSettings);
+settingsEl.addEventListener('click', (e) => { if (e.target === settingsEl) closeSettings(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !settingsEl.hidden) closeSettings(); });
+perfConfig.addEventListener('click', () => openSettings(true));
+
+$('set-save').addEventListener('change', (e) => {
+  settings.saveHistory = e.target.checked;
+  updatePersistLabel();
+  saveSettingsSoon();
+  if (settings.saveHistory) Object.keys(history).forEach(saveThreadSoon);   // keep what was typed while it was off
+});
+$('set-wide').addEventListener('change', (e) => {
+  settings.fullWidth = e.target.checked;
+  applySettings();
+  saveSettingsSoon();
+});
+$('set-delete').addEventListener('click', async () => {
+  if (!confirm('Delete ALL your saved chat history on the server? This cannot be undone.')) return;
+  try { await fetch('/api/history', { method: 'DELETE' }); } catch { /* ignore */ }
+  history = {};
+  if (current) renderThread();
+});
+$('set-import').addEventListener('click', async () => {
+  const old = readOldLocal();
+  if (!confirm('Copy the chat history stored in this browser into your account? (It is then removed from the browser.)')) return;
+  for (const [id, arr] of Object.entries(old)) {
+    if (!Array.isArray(arr) || !models.some((m) => m.id === id)) continue;
+    if (!(history[id] && history[id].length)) {
+      history[id] = arr.filter((m) => m && typeof m.content === 'string').map((m) => ({ role: m.role, content: m.content, imageCount: m.imageCount }));
+      await putThread(id);
+    }
+  }
+  try { localStorage.removeItem(OLD_LS_KEY); } catch { /* ignore */ }
+  $('set-import').hidden = true;
+  if (current) renderThread();
+});
+$('set-copyid').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(me.id); $('set-copyid').textContent = 'copied'; } catch { $('set-copyid').textContent = me.id; }
+});
+
+// =====================================================================
+// views
+// =====================================================================
+function show(view) {
+  gridView.hidden = view !== 'grid';
+  launchView.hidden = view !== 'launch';
+  chatView.hidden = view !== 'chat';
+  vtView.hidden = view !== 'vt';
+  if (view === 'grid') loadStats();
+}
+
+function tickClock() { clockEl.textContent = new Date().toLocaleTimeString([], { hour12: false }); }
+
+// =====================================================================
+// home: cards
+// =====================================================================
 function toolCard(tool) {
   const interactive = tool.embed || tool.builtin;
   const card = el(interactive ? 'button' : 'a', 'card');
@@ -173,19 +396,20 @@ function toolCard(tool) {
 }
 
 function modelCard(m) {
-  const card = el('button', 'card' + (m.apiReady ? '' : ' card--disabled'));
+  const card = el('button', `card${m.apiReady ? '' : ' card--disabled'}`);
   card.type = 'button';
 
   const top = el('div', 'card__top');
   top.appendChild(el('span', 'card__name', m.name));
   const status = el('span', 'card__status');
-  let dotCls = 'dot--idle', label = 'preview only';
+  card._dot = el('span', 'dot dot--idle');
+  card._label = el('span', '', 'preview only');
   if (m.apiReady) {
-    if (keyConfigured) { dotCls = 'dot--online'; label = 'ready'; }
-    else { dotCls = 'dot--offline'; label = 'no api key'; }
+    if (keyConfigured) { card._dot.className = 'dot dot--online'; card._label.textContent = 'ready'; }
+    else { card._dot.className = 'dot dot--offline'; card._label.textContent = 'no api key'; }
   }
-  status.appendChild(el('span', `dot ${dotCls}`));
-  status.appendChild(el('span', '', label));
+  status.appendChild(card._dot);
+  status.appendChild(card._label);
   top.appendChild(status);
   card.appendChild(top);
 
@@ -195,6 +419,7 @@ function modelCard(m) {
   if (m.apiReady) {
     card.appendChild(el('span', 'card__launch', 'chat \u2192'));
     card.addEventListener('click', () => openChat(m));
+    if (keyConfigured) { card._model = m; modelCards.push(card); }
   } else if (m.playground) {
     const a = el('a', 'card__link', 'open playground \u2197');
     a.href = m.playground; a.target = '_blank'; a.rel = 'noopener';
@@ -205,14 +430,14 @@ function modelCard(m) {
 
 function renderHome() {
   sectionsEl.textContent = '';
+  modelCards = [];
 
   sectionsEl.appendChild(el('h2', 'section-title', 'tools'));
   const toolGrid = el('div', 'cards');
   TOOLS.forEach((t) => { const c = toolCard(t); toolGrid.appendChild(c); if (t.check) checkStatus(t, c._dot, c._label); });
   sectionsEl.appendChild(toolGrid);
 
-  const cats = [...new Set(models.map((m) => m.category))];
-  cats.forEach((cat) => {
+  [...new Set(models.map((m) => m.category))].forEach((cat) => {
     sectionsEl.appendChild(el('h2', 'section-title', `models // ${cat}`));
     const grid = el('div', 'cards');
     models.filter((m) => m.category === cat).forEach((m) => grid.appendChild(modelCard(m)));
@@ -221,6 +446,7 @@ function renderHome() {
 
   toolCountEl.textContent = `${TOOLS.length} tools \u00b7 ${models.length} models`
     + (keyConfigured ? '' : ' \u00b7 NVIDIA_API_KEY missing (see .env.example)');
+  updateHealthUI();
 }
 
 // Best-effort reachability check (no-cors: only tells whether the request went through).
@@ -232,18 +458,180 @@ function checkStatus(tool, dot, label) {
 
 async function loadModels() {
   try {
-    const r = await fetch('/api/models');
-    const j = await r.json();
+    const j = await (await fetch('/api/models')).json();
     models = j.models; keyConfigured = j.keyConfigured;
-  } catch {
-    models = []; keyConfigured = false;
-  }
+  } catch { models = []; keyConfigured = false; }
   try { vtStatus = await (await fetch('/api/vt/status')).json(); } catch { vtStatus = { keyConfigured: false }; }
   renderHome();
   loadStats();
 }
 
-// ---------- iframe tools ----------
+// ---------- model health ----------
+function healthView(id) {
+  if (!healthData || healthData.enabled === false) return null;
+  const h = healthData.models && healthData.models[id];
+  if (!h) return null;
+  switch (h.status) {
+    case 'up': return { cls: 'dot--online', label: `up \u00b7 ${fmtMs(h.latency)}`, tone: 'ok', h };
+    case 'slow': return { cls: 'dot--warn', label: `slow \u00b7 ${fmtMs(h.latency)}`, tone: 'warn', h };
+    case 'suspect': return { cls: 'dot--warn', label: 'no response \u00b7 rechecking', tone: 'warn', h };
+    case 'down': return { cls: 'dot--offline', label: 'down', tone: 'bad', h };
+    case 'busy': return { cls: 'dot--warn', label: 'rate limited', tone: 'warn', h };
+    case 'blocked': return { cls: 'dot--offline', label: h.error || 'blocked', tone: 'bad', h };
+    case 'unknown': return { cls: 'dot--checking', label: 'checking\u2026', tone: '', h };
+    default: return null;
+  }
+}
+function updateHealthUI() {
+  modelCards.forEach((card) => {
+    const v = healthView(card._model.id);
+    if (!v) return;
+    card._dot.className = `dot ${v.cls}`;
+    card._label.textContent = v.label;
+    card._label.parentElement.title = (v.h.ts ? `last checked ${new Date(v.h.ts).toLocaleTimeString()}` : '') + (v.h.error ? ` \u00b7 ${v.h.error}` : '');
+  });
+  if (current) renderPerf();
+}
+async function loadHealth() {
+  try {
+    const r = await fetch('/api/health');
+    if (!r.ok) return;
+    healthData = await r.json();
+    updateHealthUI();
+  } catch { /* ignore */ }
+}
+
+// =====================================================================
+// stats panel
+// =====================================================================
+function tile(num, label, sub) {
+  const t = el('div', 'tile');
+  t.appendChild(el('div', 'tile__num', num));
+  t.appendChild(el('div', 'tile__lbl', label));
+  if (sub) t.appendChild(el('div', 'tile__sub', sub));
+  return t;
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(`/api/stats?days=${statsDays}&scope=${statsScope}`);
+    if (!r.ok) throw new Error('stats unavailable');
+    renderStats(await r.json());
+  } catch { statsPanel.textContent = ''; }
+}
+
+function renderStats(d) {
+  statsPanel.textContent = '';
+
+  const head = el('div', 'stats__head');
+  head.appendChild(el('h2', 'section-title stats__title', `stats // ${d.scope === 'all' && authMode === 'clerk' ? 'everyone' : (authMode === 'clerk' ? 'you' : 'this hub')} // last ${d.days} days`));
+  const ctl = el('div', 'stats__ctl');
+  if (me.isAdmin && authMode === 'clerk') {
+    [['all', 'everyone'], ['me', 'just me']].forEach(([val, lbl]) => {
+      const b = el('button', `btn${statsScope === val ? ' btn--primary' : ''}`, lbl);
+      b.type = 'button';
+      b.addEventListener('click', () => { statsScope = val; loadStats(); });
+      ctl.appendChild(b);
+    });
+  }
+  [7, 30].forEach((n) => {
+    const b = el('button', `btn${n === d.days ? ' btn--primary' : ''}`, `${n}d`);
+    b.type = 'button';
+    b.addEventListener('click', () => { statsDays = n; loadStats(); });
+    ctl.appendChild(b);
+  });
+  if (me.isAdmin) {
+    const wipe = el('button', 'btn btn--danger', 'wipe stats');
+    wipe.type = 'button';
+    wipe.addEventListener('click', async () => {
+      if (!confirm('Delete all recorded stats? (Chat history is not affected.)')) return;
+      try { await fetch('/api/stats', { method: 'DELETE' }); } catch { /* ignore */ }
+      loadStats();
+    });
+    ctl.appendChild(wipe);
+  }
+  head.appendChild(ctl);
+  statsPanel.appendChild(head);
+
+  const t = d.totals, v = d.vt;
+  const rate = t.chats ? `${Math.round((t.ok / t.chats) * 100)}%` : '\u2013';
+  const tiles = el('div', 'stats__tiles');
+  tiles.appendChild(tile(fmtNum(t.chats), 'chat requests', `${t.errors} failed`));
+  tiles.appendChild(tile(rate, 'success rate'));
+  tiles.appendChild(tile(`~${fmtNum(t.tokensOut)}`, 'tokens generated', 'estimate'));
+  tiles.appendChild(tile(fmtNum(t.images), 'images sent'));
+  tiles.appendChild(tile(fmtNum(v.lookups + v.uploads + v.urlScans + v.rescans), 'virustotal requests',
+    v.configured ? `quota today ${v.usedToday}/${v.dailyLimit}` : 'no VT_API_KEY'));
+  if (me.isAdmin) tiles.appendChild(tile(fmtNum(d.healthChecksToday), 'health checks today', 'background model tests'));
+  statsPanel.appendChild(tiles);
+
+  const cols = el('div', 'stats__cols');
+
+  const mbox = el('div', 'stats__box');
+  mbox.appendChild(el('div', 'stats__boxtitle', 'by model'));
+  if (!d.perModel.length) {
+    mbox.appendChild(el('div', 'dim', 'no chats recorded yet \u2014 open a model and say something.'));
+  } else {
+    const max = Math.max(...d.perModel.map((m) => m.count));
+    const hdr = el('div', 'mrow mrow--hdr');
+    ['model', 'requests', 'first token', 'total', 'errors'].forEach((h) => hdr.appendChild(el('span', '', h)));
+    mbox.appendChild(hdr);
+    d.perModel.forEach((m) => {
+      const row = el('div', 'mrow');
+      row.appendChild(el('span', 'mrow__name', m.name));
+      const bar = el('span', 'mrow__bar');
+      const fill = el('i'); fill.style.width = `${Math.max(4, Math.round((m.count / max) * 100))}%`;
+      bar.appendChild(fill); bar.appendChild(el('b', '', String(m.count)));
+      row.appendChild(bar);
+      row.appendChild(el('span', '', fmtMs(m.avgTtfb)));
+      row.appendChild(el('span', '', fmtMs(m.avgTotal)));
+      row.appendChild(el('span', m.errors ? 'mrow__err' : '', String(m.errors)));
+      mbox.appendChild(row);
+    });
+  }
+  cols.appendChild(mbox);
+
+  const abox = el('div', 'stats__box');
+  abox.appendChild(el('div', 'stats__boxtitle', 'activity per day'));
+  const peak = Math.max(1, ...d.perDay.flatMap((x) => [x.chats, x.vt]));
+  const chart = el('div', 'chart');
+  d.perDay.forEach((x, i) => {
+    const col = el('div', 'chart__col');
+    col.title = `${x.date}: ${x.chats} chat request(s), ${x.vt} VirusTotal request(s)`;
+    const bars = el('div', 'chart__bars');
+    const a = el('i', 'chart__bar chart__bar--chat'); a.style.height = x.chats ? `${Math.max(4, (x.chats / peak) * 100)}%` : '0';
+    const b = el('i', 'chart__bar chart__bar--vt'); b.style.height = x.vt ? `${Math.max(4, (x.vt / peak) * 100)}%` : '0';
+    bars.appendChild(a); bars.appendChild(b);
+    col.appendChild(bars);
+    const showLbl = d.perDay.length <= 10 || i % 5 === 0 || i === d.perDay.length - 1;
+    col.appendChild(el('span', 'chart__lbl', showLbl ? x.date.slice(5) : '\u00a0'));
+    chart.appendChild(col);
+  });
+  abox.appendChild(chart);
+  const legend = el('div', 'chart__legend');
+  legend.appendChild(el('span', 'chart__key chart__key--chat', 'chat'));
+  legend.appendChild(el('span', 'chart__key chart__key--vt', 'virustotal'));
+  abox.appendChild(legend);
+  cols.appendChild(abox);
+  statsPanel.appendChild(cols);
+
+  const vbox = el('div', 'stats__box');
+  vbox.appendChild(el('div', 'stats__boxtitle', 'virustotal'));
+  const vv = v.verdicts;
+  vbox.appendChild(el('div', 'stats__line', `lookups ${v.lookups} \u00b7 uploads ${v.uploads} \u00b7 url scans ${v.urlScans} \u00b7 rescans ${v.rescans}`));
+  const verdictLine = el('div', 'stats__line');
+  [['malicious', vv.malicious, 'bad'], ['suspicious', vv.suspicious, 'warn'], ['clean', vv.clean, 'ok'], ['unrated', vv.unrated, '']]
+    .forEach(([lbl, n, cls]) => verdictLine.appendChild(el('span', `vchip ${cls ? `vchip--${cls}` : ''}`, `${lbl} ${n || 0}`)));
+  vbox.appendChild(verdictLine);
+  statsPanel.appendChild(vbox);
+
+  statsPanel.appendChild(el('p', 'stats__note dim',
+    'stored only in data/stats.json on the hub: model, timings, sizes and counts. never message text, filenames or files.'));
+}
+
+// =====================================================================
+// iframe tools
+// =====================================================================
 function launchTool(tool) {
   breadcrumbEl.textContent = `ai-hub > ${tool.id}`;
   newTabBtn.href = tool.url;
@@ -251,8 +639,7 @@ function launchTool(tool) {
   fallbackEl.hidden = true;
   toolFrame.hidden = false;
   toolFrame.src = tool.url;
-  gridView.hidden = true;
-  launchView.hidden = false;
+  show('launch');
 
   // Blocked framing fires no error event, so this is a timeout heuristic.
   clearTimeout(frameTimeout);
@@ -262,16 +649,15 @@ function launchTool(tool) {
     if (!loaded) { toolFrame.hidden = true; fallbackEl.hidden = false; }
   }, 6000);
 }
-function closeTool() {
+backBtn.addEventListener('click', () => {
   clearTimeout(frameTimeout);
   toolFrame.src = 'about:blank';
-  launchView.hidden = true;
-  gridView.hidden = false;
-  loadStats();
-}
-backBtn.addEventListener('click', closeTool);
+  show('grid');
+});
 
-// ---------- chat ----------
+// =====================================================================
+// chat
+// =====================================================================
 // Escape first, then allow only ``` fences, `inline code` and **bold**.
 function renderLite(src) {
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -295,11 +681,8 @@ function thread() {
   if (!history[current.id]) history[current.id] = [];
   return history[current.id];
 }
-
-function nearBottom() {
-  return window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
-}
-function scrollDown() { window.scrollTo(0, document.body.scrollHeight); }
+function nearBottom() { return chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 160; }
+function scrollDown() { chatLog.scrollTop = chatLog.scrollHeight; }
 
 function messageNode(msg, { streamingNow = false, reasoning = '' } = {}) {
   const wrap = el('div', `msg msg--${msg.role}`);
@@ -318,7 +701,7 @@ function messageNode(msg, { streamingNow = false, reasoning = '' } = {}) {
   } else if (msg.imageCount) {
     wrap.appendChild(el('div', 'msg__imgnote', `[${msg.imageCount} image${msg.imageCount === 1 ? '' : 's'} not saved]`));
   }
-  const body = el('div', 'msg__body' + (streamingNow ? ' msg__body--streaming' : ''));
+  const body = el('div', `msg__body${streamingNow ? ' msg__body--streaming' : ''}`);
   body.innerHTML = renderLite(msg.content);
   wrap.appendChild(body);
   return wrap;
@@ -329,6 +712,7 @@ function renderThread() {
   const t = thread();
   if (!t.length) chatLog.appendChild(el('div', 'chat-empty', `> new chat with ${current.name}. say something.`));
   t.forEach((m) => chatLog.appendChild(messageNode(m)));
+  renderPerf();
 }
 
 function setStreaming(on) {
@@ -341,29 +725,92 @@ function setStreaming(on) {
   chatBack.disabled = on;
 }
 
+// ---------- performance tab ----------
+const estTokens = (chars) => Math.round(chars / 4);
+function parseCtx(s) {
+  const m = /^([\d.]+)\s*([KM])?$/i.exec(s || '');
+  if (!m) return null;
+  return parseFloat(m[1]) * (m[2] ? (m[2].toUpperCase() === 'M' ? 1e6 : 1e3) : 1);
+}
+const fmtTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+
+function recordPerf(modelId, { ok, ttfb, total, tokens }) {
+  const sp = sessionPerf[modelId] || (sessionPerf[modelId] = { n: 0, errors: 0, ttfbSum: 0, ttfbN: 0, last: null });
+  sp.n += 1;
+  if (!ok) sp.errors += 1;
+  else {
+    sp.ttfbSum += ttfb; sp.ttfbN += 1;
+    const gen = total - ttfb;
+    sp.last = { ttfb, total, tokens, tps: gen > 300 && tokens > 0 ? tokens / (gen / 1000) : null };
+  }
+  renderPerf();
+}
+
+function renderPerf() {
+  perfChips.textContent = '';
+  if (!current) return;
+  const sp = sessionPerf[current.id] || { n: 0, errors: 0, ttfbSum: 0, ttfbN: 0, last: null };
+  const last = sp.last;
+  const on = settings.perf || {};
+  const add = (label, value, tone) => {
+    const c = el('div', `pchip${tone ? ` pchip--${tone}` : ''}`);
+    c.appendChild(el('span', 'pchip__l', label));
+    c.appendChild(el('span', 'pchip__v', value));
+    perfChips.appendChild(c);
+  };
+  if (on.health) {
+    const hv = healthView(current.id);
+    add('status', hv ? hv.label : (healthData && healthData.enabled === false ? 'checks off' : '\u2013'), hv ? hv.tone : '');
+  }
+  if (on.ttfb) add('first token', last ? fmtMs(last.ttfb) : '\u2013');
+  if (on.total) add('total', last ? fmtMs(last.total) : '\u2013');
+  if (on.tps) add('speed', last && last.tps ? `~${Math.round(last.tps)} tok/s` : '\u2013');
+  if (on.tokens) add('tokens out', last ? `~${fmtNum(last.tokens)}` : '\u2013');
+  if (on.ctx) {
+    const chars = thread().reduce((n, m) => n + m.content.length + ((m.images && m.images.length) || 0) * 3200, 0);
+    const used = estTokens(chars);
+    const max = parseCtx(current.ctx);
+    add('context', max ? `~${fmtTok(used)} / ${current.ctx} (${Math.min(100, Math.round((used / max) * 100))}%)` : `~${fmtTok(used)}`,
+      max && used / max > 0.8 ? 'warn' : '');
+  }
+  if (on.avgTtfb) add('avg first token', sp.ttfbN ? fmtMs(Math.round(sp.ttfbSum / sp.ttfbN)) : '\u2013');
+  if (on.session) add('session', `${sp.n} req \u00b7 ${sp.errors} err`, sp.errors ? 'warn' : '');
+  if (perfNote) add('note', perfNote, 'bad');
+  if (!perfChips.children.length) perfChips.appendChild(el('span', 'dim', 'nothing selected \u2014 press configure.'));
+}
+
+perfRecheck.addEventListener('click', async () => {
+  if (!current) return;
+  perfRecheck.disabled = true;
+  try {
+    const r = await fetch(`/api/health/recheck/${current.id}`, { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    await loadHealth();
+  } catch (e) {
+    perfNote = e.message;
+    renderPerf();
+    setTimeout(() => { perfNote = ''; renderPerf(); }, 5000);
+  } finally { perfRecheck.disabled = false; }
+});
+
 function openChat(m) {
   current = m;
   chatBreadcrumb.textContent = `ai-hub > chat > ${m.name}`;
   clearImages();
   chatAttach.hidden = !m.vision;
+  show('chat');
   renderThread();
-  gridView.hidden = true;
-  chatView.hidden = false;
   chatInput.focus();
   scrollDown();
+  loadHealth();
 }
-function closeChat() {
-  chatView.hidden = true;
-  gridView.hidden = false;
-  current = null;
-  loadStats();
-}
-chatBack.addEventListener('click', closeChat);
+chatBack.addEventListener('click', () => { current = null; show('grid'); });
 
 chatNew.addEventListener('click', () => {
   if (thread().length && !confirm('Clear this conversation?')) return;
   history[current.id] = [];
-  saveHistory();
+  putThread(current.id);   // always applies, so a cleared chat is also cleared on the server
   renderThread();
 });
 
@@ -378,6 +825,7 @@ async function send() {
   if (streaming || !current) return;
   const text = chatInput.value.trim();
   if (!text) return;
+  const model = current;
 
   const t = thread();
   const sentImages = pendingImages.slice();
@@ -409,13 +857,15 @@ async function send() {
 
   abortCtrl = new AbortController();
   setStreaming(true);
+  const tStart = performance.now();
+  let tFirst = null;
   let failure = null;
 
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: current.id, messages: ctx }),
+      body: JSON.stringify({ model: model.id, messages: ctx }),
       signal: abortCtrl.signal,
     });
     if (!res.ok) {
@@ -444,6 +894,7 @@ async function send() {
         const r = d.reasoning_content || d.reasoning;
         if (r) reasoning += r;
         if (d.content) reply.content += d.content;
+        if ((r || d.content) && tFirst === null) tFirst = performance.now();
 
         const stick = nearBottom();
         const fresh = messageNode(reply, { streamingNow: true, reasoning });
@@ -460,21 +911,34 @@ async function send() {
     abortCtrl = null;
   }
 
+  const tEnd = performance.now();
+  recordPerf(model.id, {
+    ok: !failure && tFirst !== null,
+    ttfb: tFirst !== null ? Math.round(tFirst - tStart) : 0,
+    total: Math.round(tEnd - tStart),
+    tokens: estTokens(reply.content.length + reasoning.length),
+  });
+
   // Settle history. A user turn with no reply is removed and its text restored,
   // so the thread keeps alternating user/assistant (some chat templates require it).
-  if (reply.content) {
-    if (reasoning) reply.reasoning = reasoning;   // shown this session, never saved
+  if (current && current.id === model.id) {
+    if (reply.content) {
+      if (reasoning) reply.reasoning = reasoning;   // shown this session, never saved
+      t.push(reply);
+    } else {
+      t.pop();
+      chatInput.value = text;
+      sentImages.forEach((u) => addImage(u));
+    }
+    saveThreadSoon(model.id);
+    renderThread();
+    if (failure) errorBubble(failure.message, failure.detail);
+    scrollDown();
+    chatInput.focus();
+  } else if (reply.content) {
     t.push(reply);
-  } else {
-    t.pop();
-    chatInput.value = text;
-    sentImages.forEach((u) => addImage(u));
+    saveThreadSoon(model.id);
   }
-  saveHistory();
-  renderThread();
-  if (failure) { errorBubble(failure.message, failure.detail); scrollDown(); }
-  else scrollDown();
-  chatInput.focus();
 }
 
 chatSend.addEventListener('click', send);
@@ -514,7 +978,7 @@ function fileToDataUrl(file) {
       const c = document.createElement('canvas');
       c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
       const g = c.getContext('2d');
-      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); // flatten transparency
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
       g.drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(objUrl);
       resolve(c.toDataURL('image/jpeg', 0.85));
@@ -537,135 +1001,13 @@ chatInput.addEventListener('paste', (e) => {
   if (files.length && current && current.vision) { e.preventDefault(); attachFiles(files); }
 });
 
-// ---------- stats panel ----------
-const fmtNum = (n) => Number(n || 0).toLocaleString();
-const fmtMs = (ms) => (ms == null ? '\u2013' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
-
-function tile(num, label, sub) {
-  const t = el('div', 'tile');
-  t.appendChild(el('div', 'tile__num', num));
-  t.appendChild(el('div', 'tile__lbl', label));
-  if (sub) t.appendChild(el('div', 'tile__sub', sub));
-  return t;
-}
-
-async function loadStats() {
-  try {
-    const r = await fetch(`/api/stats?days=${statsDays}`);
-    if (!r.ok) throw new Error('stats unavailable');
-    renderStats(await r.json());
-  } catch { statsPanel.textContent = ''; }
-}
-
-function renderStats(d) {
-  statsPanel.textContent = '';
-
-  const head = el('div', 'stats__head');
-  head.appendChild(el('h2', 'section-title stats__title', `stats // last ${d.days} days`));
-  const ctl = el('div', 'stats__ctl');
-  [7, 30].forEach((n) => {
-    const b = el('button', `btn${n === d.days ? ' btn--primary' : ''}`, `${n}d`);
-    b.type = 'button';
-    b.addEventListener('click', () => { statsDays = n; loadStats(); });
-    ctl.appendChild(b);
-  });
-  const wipe = el('button', 'btn btn--danger', 'wipe stats');
-  wipe.type = 'button';
-  wipe.addEventListener('click', async () => {
-    if (!confirm('Delete all recorded stats? (Your chat history is not affected.)')) return;
-    try { await fetch('/api/stats', { method: 'DELETE' }); } catch { /* ignore */ }
-    loadStats();
-  });
-  ctl.appendChild(wipe);
-  head.appendChild(ctl);
-  statsPanel.appendChild(head);
-
-  const t = d.totals, v = d.vt;
-  const rate = t.chats ? `${Math.round((t.ok / t.chats) * 100)}%` : '\u2013';
-  const tiles = el('div', 'stats__tiles');
-  tiles.appendChild(tile(fmtNum(t.chats), 'chat requests', `${t.errors} failed`));
-  tiles.appendChild(tile(rate, 'success rate'));
-  tiles.appendChild(tile(`~${fmtNum(t.tokensOut)}`, 'tokens generated', 'estimate'));
-  tiles.appendChild(tile(fmtNum(t.images), 'images sent'));
-  tiles.appendChild(tile(fmtNum(v.lookups + v.uploads + v.urlScans + v.rescans), 'virustotal requests',
-    v.configured ? `quota today ${v.usedToday}/${v.dailyLimit}` : 'no VT_API_KEY'));
-  statsPanel.appendChild(tiles);
-
-  const cols = el('div', 'stats__cols');
-
-  // per-model
-  const mbox = el('div', 'stats__box');
-  mbox.appendChild(el('div', 'stats__boxtitle', 'by model'));
-  if (!d.perModel.length) {
-    mbox.appendChild(el('div', 'dim', 'no chats recorded yet \u2014 open a model and say something.'));
-  } else {
-    const max = Math.max(...d.perModel.map((m) => m.count));
-    const hdr = el('div', 'mrow mrow--hdr');
-    ['model', 'requests', 'first token', 'total', 'errors'].forEach((h) => hdr.appendChild(el('span', '', h)));
-    mbox.appendChild(hdr);
-    d.perModel.forEach((m) => {
-      const row = el('div', 'mrow');
-      row.appendChild(el('span', 'mrow__name', m.name));
-      const bar = el('span', 'mrow__bar');
-      const fill = el('i'); fill.style.width = `${Math.max(4, Math.round((m.count / max) * 100))}%`;
-      bar.appendChild(fill); bar.appendChild(el('b', '', String(m.count)));
-      row.appendChild(bar);
-      row.appendChild(el('span', '', fmtMs(m.avgTtfb)));
-      row.appendChild(el('span', '', fmtMs(m.avgTotal)));
-      row.appendChild(el('span', m.errors ? 'mrow__err' : '', String(m.errors)));
-      mbox.appendChild(row);
-    });
-  }
-  cols.appendChild(mbox);
-
-  // activity chart
-  const abox = el('div', 'stats__box');
-  abox.appendChild(el('div', 'stats__boxtitle', 'activity per day'));
-  const peak = Math.max(1, ...d.perDay.flatMap((x) => [x.chats, x.vt]));
-  const chart = el('div', 'chart');
-  d.perDay.forEach((x, i) => {
-    const col = el('div', 'chart__col');
-    col.title = `${x.date}: ${x.chats} chat request(s), ${x.vt} VirusTotal request(s)`;
-    const bars = el('div', 'chart__bars');
-    const a = el('i', 'chart__bar chart__bar--chat'); a.style.height = x.chats ? `${Math.max(4, (x.chats / peak) * 100)}%` : '0';
-    const b = el('i', 'chart__bar chart__bar--vt'); b.style.height = x.vt ? `${Math.max(4, (x.vt / peak) * 100)}%` : '0';
-    bars.appendChild(a); bars.appendChild(b);
-    col.appendChild(bars);
-    const showLbl = d.perDay.length <= 10 || i % 5 === 0 || i === d.perDay.length - 1;
-    col.appendChild(el('span', 'chart__lbl', showLbl ? x.date.slice(5) : '\u00a0'));
-    chart.appendChild(col);
-  });
-  abox.appendChild(chart);
-  const legend = el('div', 'chart__legend');
-  legend.appendChild(el('span', 'chart__key chart__key--chat', 'chat'));
-  legend.appendChild(el('span', 'chart__key chart__key--vt', 'virustotal'));
-  abox.appendChild(legend);
-  cols.appendChild(abox);
-  statsPanel.appendChild(cols);
-
-  // virustotal summary
-  const vbox = el('div', 'stats__box');
-  vbox.appendChild(el('div', 'stats__boxtitle', 'virustotal'));
-  const vv = v.verdicts;
-  vbox.appendChild(el('div', 'stats__line',
-    `lookups ${v.lookups} \u00b7 uploads ${v.uploads} \u00b7 url scans ${v.urlScans} \u00b7 rescans ${v.rescans}`));
-  const verdictLine = el('div', 'stats__line');
-  [['malicious', vv.malicious, 'bad'], ['suspicious', vv.suspicious, 'warn'], ['clean', vv.clean, 'ok'], ['unrated', vv.unrated, '']]
-    .forEach(([lbl, n, cls]) => verdictLine.appendChild(el('span', `vchip ${cls ? `vchip--${cls}` : ''}`, `${lbl} ${n || 0}`)));
-  vbox.appendChild(verdictLine);
-  statsPanel.appendChild(vbox);
-
-  statsPanel.appendChild(el('p', 'stats__note dim',
-    'stored only in data/stats.json on this PC: model, timings, sizes and counts. never message text, filenames or files.'));
-}
-
-// ---------- virustotal ----------
+// =====================================================================
+// virustotal
+// =====================================================================
 const VT_HASH_RE = /^([a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const VT_MAX_UPLOAD = 32 * 1024 * 1024;
 const VT_MAX_HASH = 256 * 1024 * 1024;
 let vtRun = 0;   // bumping this cancels any in-flight flow
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function vtApi(path, opts) {
   const r = await fetch(path, opts);
@@ -695,19 +1037,12 @@ function openVT() {
   vtRun += 1;
   vtOut.textContent = '';
   vtInput.value = '';
-  gridView.hidden = true;
-  vtView.hidden = false;
+  show('vt');
   refreshVtQuota().then(() => {
     if (!vtStatus.keyConfigured) vtMsg('VT_API_KEY is not set. Add it to .env (free key from virustotal.com) and restart the server.', 'vt-msg--error');
   });
 }
-function closeVT() {
-  vtRun += 1;
-  vtView.hidden = true;
-  gridView.hidden = false;
-  loadStats();
-}
-vtBack.addEventListener('click', closeVT);
+vtBack.addEventListener('click', () => { vtRun += 1; show('grid'); });
 
 async function sha256Hex(file) {
   const buf = await file.arrayBuffer();
@@ -721,7 +1056,7 @@ async function handleFile(file) {
   vtRun += 1;
   const run = vtRun;
   if (!window.isSecureContext || !(window.crypto && crypto.subtle)) {
-    return vtMsg('hashing needs a secure context \u2014 open the hub via http://127.0.0.1:3000 or http://localhost:3000.', 'vt-msg--error');
+    return vtMsg('hashing needs a secure context \u2014 open the hub over https, or via http://localhost:3000.', 'vt-msg--error');
   }
   if (file.size > VT_MAX_HASH) {
     return vtMsg(`this file is ${mb(file.size)} MB \u2014 too big to hash in the browser (limit 256 MB). Hash it yourself (Windows: certutil -hashfile "file" SHA256) and paste the hash below.`, 'vt-msg--error');
@@ -751,7 +1086,6 @@ async function lookupHash(hash, run, file) {
       },
     });
   }
-  // unknown to VirusTotal
   vtOut.textContent = '';
   const box = el('div', 'vt-report');
   box.appendChild(el('div', 'vt-verdict vt-verdict--unrated', 'UNKNOWN TO VIRUSTOTAL'));
@@ -901,8 +1235,9 @@ function vtSubmit() {
 vtGo.addEventListener('click', vtSubmit);
 vtInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') vtSubmit(); });
 
-// ---------- init ----------
-runBoot();
-loadModels();
+// =====================================================================
+// init
+// =====================================================================
 tickClock();
 setInterval(tickClock, 1000);
+runBoot().then(startApp);
