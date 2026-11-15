@@ -13,6 +13,9 @@ for (const name of [
 if (env.HOST === undefined) process.env.HOST = '0.0.0.0';
 globalThis.__AI_HUB_CLOUDFLARE_ENV = env;
 
+// The bundled CommonJS Express server expects Node's __dirname global.
+globalThis.__dirname = '.';
+
 await import('./server.js');
 
 export default httpServerHandler({ port: Number(process.env.PORT || 3000) });
