@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI HUB // ifire</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Boot sequence + history question, shown once on load -->
+  <div id="boot" class="boot">
+    <div class="boot__inner">
+      <pre id="boot-text" class="boot__text"></pre>
+      <div id="consent" class="consent" hidden>
+        <p class="consent__q">> keep chat history on this device?</p>
+        <p class="consent__info dim" id="consent-info"></p>
+        <div class="consent__btns">
+          <button class="btn btn--primary" id="consent-yes" type="button">[y] yes, save &amp; load</button>
+          <button class="btn" id="consent-no" type="button">[n] no, session only</button>
+          <button class="btn btn--danger" id="consent-wipe" type="button" hidden>[w] wipe saved history</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main hub, hidden until boot + question finish -->
+  <div id="hub" class="hub" hidden>
+
+    <header class="titlebar">
+      <div class="titlebar__dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="titlebar__path">guest@ai-hub:~$</div>
+      <div class="titlebar__persist" id="persist-indicator"></div>
+      <div class="titlebar__clock" id="clock"></div>
+    </header>
+
+    <main class="grid-view" id="grid-view">
+      <div class="grid-view__head">
+        <h1>AI HUB</h1>
+        <p id="tool-count" class="grid-view__status"></p>
+      </div>
+      <div id="stats-panel" class="stats"></div>
+      <div id="sections"></div>
+    </main>
+
+    <!-- iframe tools -->
+    <section class="launch-view" id="launch-view" hidden>
+      <div class="launch-view__bar">
+        <button class="btn" id="back-btn" type="button">&larr; back</button>
+        <span class="launch-view__breadcrumb" id="breadcrumb"></span>
+        <a class="btn" id="newtab-btn" target="_blank" rel="noopener">open in new tab &#8599;</a>
+      </div>
+      <div class="launch-view__frame-wrap">
+        <iframe id="tool-frame" class="launch-view__frame" title="embedded tool"></iframe>
+        <div class="launch-view__fallback" id="fallback" hidden>
+          <p>embedding blocked or timed out.</p>
+          <p class="dim">this tool's server may not allow being framed.</p>
+          <a class="btn btn--primary" id="fallback-link" target="_blank" rel="noopener">open in new tab &#8599;</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- model chat -->
+    <section class="chat-view" id="chat-view" hidden>
+      <div class="launch-view__bar">
+        <button class="btn" id="chat-back" type="button">&larr; back</button>
+        <span class="launch-view__breadcrumb" id="chat-breadcrumb"></span>
+        <button class="btn" id="chat-new" type="button">new chat</button>
+      </div>
+      <div class="chat-view__log" id="chat-log"></div>
+      <div class="composer-wrap">
+      <div class="attach-row" id="attach-row" hidden></div>
+      <div class="composer">
+        <input type="file" id="chat-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+        <button class="btn" id="chat-attach" type="button" title="attach image (or paste one)" hidden>img</button>
+        <textarea id="chat-input" rows="2" placeholder="message... (enter = send, shift+enter = newline)"></textarea>
+        <button class="btn btn--primary" id="chat-send" type="button">send</button>
+        <button class="btn btn--danger" id="chat-stop" type="button" hidden>stop</button>
+      </div>
+      </div>
+    </section>
+
+    <!-- VirusTotal scanner -->
+    <section class="vt-view" id="vt-view" hidden>
+      <div class="launch-view__bar">
+        <button class="btn" id="vt-back" type="button">&larr; back</button>
+        <span class="launch-view__breadcrumb">ai-hub &gt; virustotal</span>
+        <span class="dim vt-quota" id="vt-quota"></span>
+      </div>
+      <div class="vt-body">
+        <div class="vt-drop" id="vt-drop" tabindex="0" role="button" aria-label="choose a file to check">
+          <div>drop a file here, or click to choose</div>
+          <div class="dim">hash-first: the file is hashed in your browser and only the hash is looked up.<br>nothing is uploaded unless you press upload.</div>
+        </div>
+        <input type="file" id="vt-file" hidden>
+        <div class="vt-lookup">
+          <input id="vt-input" type="text" spellcheck="false" autocomplete="off" placeholder="or paste a hash (md5 / sha1 / sha256) or a URL">
+          <button class="btn btn--primary" id="vt-go" type="button">look up</button>
+        </div>
+        <div id="vt-out" class="vt-out"></div>
+      </div>
+    </section>
+
+  </div>
+
+<script src="app.js"></script>
+</body>
+</html>
