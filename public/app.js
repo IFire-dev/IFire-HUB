@@ -205,6 +205,7 @@ async function startApp() {
   }
   if (!meRes.ok) return showLogin({ msg: 'Could not reach the hub server.', retry: true, hideForm: true });
   me = await meRes.json();
+  if (authMode === 'clerk' && me.isAdmin) $('welcome-title').textContent = 'Welcome, Owner';
 
   await loadUserData();
   applySettings();
