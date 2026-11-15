@@ -4,7 +4,8 @@
   "description": "AI Hub — dashboard embedding self-hosted AI tools",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "node scripts/fix-cloudflare-iconv.cjs"
   },
   "engines": {
     "node": ">=18"
