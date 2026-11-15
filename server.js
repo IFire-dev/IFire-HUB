@@ -4,7 +4,6 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const MODELS = require('./models');
-const auth = require('./auth');
 const userdata = require('./userdata');
 const { createHealth } = require('./health');
 
@@ -18,6 +17,9 @@ try {
     }
   }
 } catch { /* no .env — fine, features that need keys will say so */ }
+
+// auth.js reads the Clerk keys when it is loaded, so load .env first.
+const auth = require('./auth');
 
 const KEY = process.env.NVIDIA_API_KEY || '';
 const VT_KEY = process.env.VT_API_KEY || '';
@@ -65,7 +67,9 @@ function pushEvent(list, ev) {
   if (list.length > MAX_EVENTS) list.splice(0, list.length - MAX_EVENTS);
   persistSoon();
 }
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { flushStats(); process.exit(0); });
+if (!globalThis.__AI_HUB_CLOUDFLARE_ENV) {
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { flushStats(); process.exit(0); });
+}
 
 const recordChat = (e) => pushEvent(stats.chat, { ts: Date.now(), uid: auth.currentUid(), ...e });
 const recordVt = (kind, extra = {}) => pushEvent(stats.vt, { ts: Date.now(), uid: auth.currentUid(), kind, ...extra });
@@ -546,7 +550,8 @@ app.delete('/api/stats', (req, res) => {
 // =====================================================================
 // Account: who am I, settings, saved chat history (stored per account on this server)
 // =====================================================================
-const store = userdata.create(path.join(DATA_DIR, 'users'), MODELS.map((m) => m.id));
+const store = userdata.create(path.join(DATA_DIR, 'users'), MODELS.map((m) => m.id),
+  globalThis.__AI_HUB_CLOUDFLARE_ENV && globalThis.__AI_HUB_CLOUDFLARE_ENV.DB);
 
 app.get('/api/me', (req, res) => res.json({ id: req.user.id, isAdmin: req.user.isAdmin, mode: auth.MODE }));
 

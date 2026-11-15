@@ -35,6 +35,11 @@ See **SETUP-CLERK-CLOUDFLARE.md** (step by step) and **HOSTING.md** (background)
 lock sign-ups in the Clerk dashboard, and reach the hub through Tailscale or a Cloudflare Tunnel.
 With no Clerk keys the hub stays a single-user local app.
 
+## Cloudflare Workers deployment
+This repo includes `wrangler.jsonc` for a Worker deployment. It serves `public/`, runs the Express API on Workers, and stores new user settings and chat history in the `ifire-hub-db` D1 database. Existing local files under `data/` are not uploaded.
+
+Set `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` as Worker variables/secrets in Cloudflare, along with `NVIDIA_API_KEY` and (if used) `VT_API_KEY`. Set `ADMIN_USER_IDS` after signing in once. Until Clerk keys are set, the Cloudflare page stays locked in setup mode; local `npm start` still uses `.env` as before.
+
 ## Add things
 - Tools (iframe / new tab): `TOOLS` array at the top of `public/app.js`
 - Models: `models.js` (`category` creates the section, `vision:true` enables image attach)

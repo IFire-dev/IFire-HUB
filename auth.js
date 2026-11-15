@@ -6,7 +6,9 @@
 // The Clerk SDK is loaded lazily, so local mode works without `npm install @clerk/express`.
 const { AsyncLocalStorage } = require('async_hooks');
 
-const MODE = (process.env.CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) ? 'clerk' : 'local';
+const CLOUDFLARE = Boolean(globalThis.__AI_HUB_CLOUDFLARE_ENV);
+const HAS_CLERK_KEYS = Boolean(process.env.CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
+const MODE = HAS_CLERK_KEYS ? 'clerk' : (CLOUDFLARE ? 'setup' : 'local');
 const list = (v) => new Set(String(v || '').split(',').map((s) => s.trim()).filter(Boolean));
 const ADMINS = list(process.env.ADMIN_USER_IDS);      // Clerk user ids (user_...), shown in Settings > Account
 const ALLOWED = list(process.env.ALLOWED_USER_IDS);   // optional extra allowlist; empty = any signed-in user
@@ -38,6 +40,7 @@ function requireUser(req, res, next) {
     req.user = { id: 'local', isAdmin: true };
     return als.run({ uid: 'local' }, next);
   }
+  if (MODE === 'setup') return res.status(503).json({ error: 'Clerk is not configured for this Cloudflare deployment.' });
   let uid = null;
   try { uid = (getAuth(req) || {}).userId || null; } catch { uid = null; }
   if (!uid) return res.status(401).json({ error: 'Sign in required.', signedOut: true });

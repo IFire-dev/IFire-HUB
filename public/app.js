@@ -140,8 +140,10 @@ async function loadClerk(publishableKey) {
 
 const CLERK_APPEARANCE = {
   variables: {
-    colorPrimary: '#ffb000', colorBackground: '#14100a', colorText: '#f2c879',
-    colorTextSecondary: '#a3803f', colorInputBackground: '#0b0904', colorInputText: '#f2c879',
+    colorPrimary: '#ffb000', colorPrimaryForeground: '#0b0904',
+    colorBackground: '#14100a', colorForeground: '#f2c879',
+    colorMutedForeground: '#c9a65d', colorInput: '#0b0904', colorInputForeground: '#f2c879',
+    colorBorder: '#8a5c00',
     fontFamily: "'JetBrains Mono', 'Courier New', monospace", borderRadius: '0px',
   },
 };
@@ -186,6 +188,10 @@ async function startApp() {
   let cfg;
   try { cfg = await (await fetch('/api/config')).json(); } catch {
     bootTextEl.textContent += '\n> server unreachable. is it running?';
+    return;
+  }
+  if (cfg.mode === 'setup') {
+    bootTextEl.textContent += '\n> Cloudflare setup incomplete: add the Clerk keys to Worker secrets.';
     return;
   }
   authMode = cfg.mode;

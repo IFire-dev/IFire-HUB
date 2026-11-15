@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ifire-hub",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ifire-hub-db",
+      "database_id": "25dbe1f5-c625-4b84-8918-3c9d6d5b8183",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "ALLOWED_HOSTS": "ifire-hub.juhasz-mate1220.workers.dev",
+    "HEALTH_ENABLED": "0"
+  }
+}

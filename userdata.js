@@ -13,7 +13,7 @@ const MAX_MSGS = 200;
 const MAX_CONTENT = 50000;
 const MAX_THREAD_BYTES = 2 * 1024 * 1024;
 
-function create(dir, validModelIds) {
+function create(dir, validModelIds, db = null) {
   const valid = new Set(validModelIds);
   const locks = new Map();
 
@@ -25,6 +25,19 @@ function create(dir, validModelIds) {
   };
 
   async function readRaw(uid) {
+    if (db) {
+      const [settingsRow, threadRows] = await Promise.all([
+        db.prepare('SELECT data_json FROM ai_hub_user_settings WHERE user_id = ?').bind(uid).first(),
+        db.prepare('SELECT model_id, messages_json FROM ai_hub_threads WHERE user_id = ?').bind(uid).all(),
+      ]);
+      const history = {};
+      for (const row of (threadRows.results || [])) {
+        try { history[row.model_id] = JSON.parse(row.messages_json); } catch { /* skip malformed row */ }
+      }
+      let settings = {};
+      try { settings = settingsRow ? JSON.parse(settingsRow.data_json) : {}; } catch { /* use defaults */ }
+      return { settings, history };
+    }
     try {
       const j = JSON.parse(await fsp.readFile(fileFor(uid), 'utf8'));
       return { settings: j.settings || {}, history: j.history || {} };
@@ -34,6 +47,19 @@ function create(dir, validModelIds) {
   }
 
   async function writeRaw(uid, data) {
+    if (db) {
+      const statements = [
+        db.prepare(`INSERT INTO ai_hub_user_settings (user_id, data_json, updated_at)
+          VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET data_json=excluded.data_json, updated_at=excluded.updated_at`)
+          .bind(uid, JSON.stringify(data.settings || {}), Date.now()),
+        db.prepare('DELETE FROM ai_hub_threads WHERE user_id = ?').bind(uid),
+        ...Object.entries(data.history || {}).map(([modelId, messages]) =>
+          db.prepare(`INSERT INTO ai_hub_threads (user_id, model_id, messages_json, updated_at)
+            VALUES (?, ?, ?, ?)`).bind(uid, modelId, JSON.stringify(messages), Date.now())),
+      ];
+      await db.batch(statements);
+      return;
+    }
     await fsp.mkdir(dir, { recursive: true });
     const f = fileFor(uid);
     const tmp = `${f}.tmp`;
