@@ -49,3 +49,4 @@ model, timings, sizes, counts. Never message text, filenames or files.
 Binds to 127.0.0.1: only this PC can use your key through the hub.
 Do NOT deploy publicly as-is: anyone could spend your key. Add auth first.
 "# IFire-HUB" 
+"# iFirehub" 
