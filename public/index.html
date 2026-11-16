@@ -46,7 +46,7 @@
 
     <main class="grid-view" id="grid-view">
       <div class="grid-view__head">
-        <h1>AI HUB</h1>
+        <h1 id="welcome-title">AI HUB</h1>
         <p id="tool-count" class="grid-view__status"></p>
       </div>
       <div id="stats-panel" class="stats"></div>
@@ -149,6 +149,20 @@
       <section class="modal__sec">
         <h3>layout</h3>
         <label class="switch"><input type="checkbox" id="set-wide"><span class="switch__ui"></span><span>use the full width of the page</span></label>
+      </section>
+
+      <section class="modal__sec">
+        <h3>appearance</h3>
+        <label class="theme-picker" for="set-theme">
+          <span>color theme</span>
+          <select id="set-theme">
+            <option value="amber">amber terminal</option>
+            <option value="green">green phosphor</option>
+            <option value="ice">ice blue</option>
+            <option value="violet">violet night</option>
+          </select>
+        </label>
+        <p class="dim">Choose a preset color theme for the hub.</p>
       </section>
 
       <section class="modal__sec">
