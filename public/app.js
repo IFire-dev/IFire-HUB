@@ -27,6 +27,7 @@ const PERF_DEFS = [
   { key: 'session', label: 'requests and errors (this session)' },
 ];
 const DEFAULT_PERF = { health: true, ttfb: true, total: true, tps: true, ctx: true, tokens: false, avgTtfb: false, session: false };
+const THEMES = ['amber', 'green', 'ice', 'violet'];
 
 // ---------- elements ----------
 const $ = (id) => document.getElementById(id);
@@ -222,7 +223,14 @@ async function startApp() {
 // per-account settings + history (stored on the server)
 // =====================================================================
 function normSettings(s) {
-  return { saveHistory: true, fullWidth: true, ...(s || {}), perf: { ...DEFAULT_PERF, ...((s && s.perf) || {}) } };
+  const raw = s || {};
+  return {
+    saveHistory: true,
+    fullWidth: true,
+    ...raw,
+    theme: THEMES.includes(raw.theme) ? raw.theme : 'amber',
+    perf: { ...DEFAULT_PERF, ...(raw.perf || {}) },
+  };
 }
 async function loadUserData() {
   try {
@@ -246,6 +254,7 @@ function updatePersistLabel() {
 }
 function applySettings() {
   document.body.classList.toggle('narrow', !settings.fullWidth);
+  document.body.dataset.theme = settings.theme || 'amber';
   updatePersistLabel();
   if (current) renderPerf();
 }
@@ -278,6 +287,7 @@ function countMsgs(o) { return Object.values(o).reduce((n, a) => n + (Array.isAr
 function openSettings(scrollToPerf) {
   $('set-save').checked = settings.saveHistory;
   $('set-wide').checked = settings.fullWidth;
+  $('set-theme').value = settings.theme || 'amber';
   $('save-note').textContent = authMode === 'clerk'
     ? 'Saved in your own file on the hub\u2019s server, so it follows you to other devices. The person who runs the hub can read it.'
     : 'Saved in data/users/local.json on this PC. Turning this off stops new saving; it does not delete what is already saved.';
@@ -330,6 +340,11 @@ $('set-save').addEventListener('change', (e) => {
 });
 $('set-wide').addEventListener('change', (e) => {
   settings.fullWidth = e.target.checked;
+  applySettings();
+  saveSettingsSoon();
+});
+$('set-theme').addEventListener('change', (e) => {
+  settings.theme = e.target.value;
   applySettings();
   saveSettingsSoon();
 });
