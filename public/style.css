@@ -504,3 +504,41 @@ body.narrow .chat-view__log, body.narrow .vt-body { max-width: 1000px; margin: 0
 .check { display: flex; align-items: center; gap: 0.6rem; font-size: 0.82rem; cursor: pointer; }
 .check input { accent-color: var(--amber); }
 @media (max-width: 560px) { .grid-view { padding: 1rem; } .vt-body { padding: 1rem; } }
+
+/* Compact dashboard: keep the tools and model catalog visible together. */
+.grid-view { padding: 0.8rem 1.5rem 1rem; }
+.grid-view__head h1 { font-size: 1.35rem; margin-bottom: 0.15rem; }
+.grid-view__status { margin-bottom: 0.55rem; }
+.stats { margin-bottom: 0.25rem; }
+.stats__details > summary { cursor: pointer; list-style: none; margin: 0; padding: 0.25rem 0; }
+.stats__details > summary::-webkit-details-marker { display: none; }
+.stats__details > summary::before { content: "+ "; color: var(--amber); }
+.stats__details[open] > summary::before { content: "− "; }
+.stats__tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.45rem; margin: 0.3rem 0 0.55rem; }
+.stats__tiles .tile { padding: 0.45rem 0.65rem; }
+.stats__tiles .tile__num { font-size: 1.15rem; }
+#sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem 1rem; }
+.catalog-group { min-width: 0; }
+.catalog-group--tools { grid-column: 1 / -1; }
+.catalog-group .section-title { margin: 0 0 0.35rem; padding-bottom: 0.2rem; }
+.catalog-group .cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.45rem; }
+.catalog-group--models .cards { grid-template-columns: 1fr; }
+.catalog-group--tools .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.catalog-group .card { padding: 0.65rem 0.75rem; }
+.catalog-group .card__top { margin-bottom: 0.25rem; }
+.catalog-group .card__tagline { font-size: 0.78rem; margin-bottom: 0.35rem; }
+.catalog-group .card__meta { font-size: 0.67rem; margin: 0 0 0.3rem; }
+.catalog-group .card__launch { padding: 0.15rem 0.45rem; }
+
+@media (min-width: 1100px) {
+  #sections { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .catalog-group--tools { grid-column: 1 / -1; }
+  .catalog-group--tools .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .grid-view { padding: 0.8rem 1rem; }
+  #sections { grid-template-columns: 1fr; }
+  .catalog-group--tools { grid-column: auto; }
+  .catalog-group--tools .cards { grid-template-columns: 1fr; }
+  .catalog-group--models .cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+}

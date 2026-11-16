@@ -454,16 +454,20 @@ function renderHome() {
   sectionsEl.textContent = '';
   modelCards = [];
 
-  sectionsEl.appendChild(el('h2', 'section-title', 'tools'));
+  const toolGroup = el('section', 'catalog-group catalog-group--tools');
+  toolGroup.appendChild(el('h2', 'section-title', 'tools'));
   const toolGrid = el('div', 'cards');
   TOOLS.forEach((t) => { const c = toolCard(t); toolGrid.appendChild(c); if (t.check) checkStatus(t, c._dot, c._label); });
-  sectionsEl.appendChild(toolGrid);
+  toolGroup.appendChild(toolGrid);
+  sectionsEl.appendChild(toolGroup);
 
   [...new Set(models.map((m) => m.category))].forEach((cat) => {
-    sectionsEl.appendChild(el('h2', 'section-title', `models // ${cat}`));
+    const group = el('section', 'catalog-group catalog-group--models');
+    group.appendChild(el('h2', 'section-title', `models // ${cat}`));
     const grid = el('div', 'cards');
     models.filter((m) => m.category === cat).forEach((m) => grid.appendChild(modelCard(m)));
-    sectionsEl.appendChild(grid);
+    group.appendChild(grid);
+    sectionsEl.appendChild(group);
   });
 
   toolCountEl.textContent = `${TOOLS.length} tools \u00b7 ${models.length} models`
@@ -545,8 +549,15 @@ async function loadStats() {
 function renderStats(d) {
   statsPanel.textContent = '';
 
+  const details = el('details', 'stats__details');
+  const summary = el('summary', 'section-title');
+  summary.textContent = `stats // ${d.scope === 'all' && authMode === 'clerk' ? 'everyone' : (authMode === 'clerk' ? 'you' : 'this hub')} // last ${d.days} days`;
+  details.appendChild(summary);
+  const content = el('div', 'stats__content');
+  details.appendChild(content);
+  statsPanel.appendChild(details);
+
   const head = el('div', 'stats__head');
-  head.appendChild(el('h2', 'section-title stats__title', `stats // ${d.scope === 'all' && authMode === 'clerk' ? 'everyone' : (authMode === 'clerk' ? 'you' : 'this hub')} // last ${d.days} days`));
   const ctl = el('div', 'stats__ctl');
   if (me.isAdmin && authMode === 'clerk') {
     [['all', 'everyone'], ['me', 'just me']].forEach(([val, lbl]) => {
@@ -573,7 +584,7 @@ function renderStats(d) {
     ctl.appendChild(wipe);
   }
   head.appendChild(ctl);
-  statsPanel.appendChild(head);
+  content.appendChild(head);
 
   const t = d.totals, v = d.vt;
   const rate = t.chats ? `${Math.round((t.ok / t.chats) * 100)}%` : '\u2013';
@@ -585,7 +596,7 @@ function renderStats(d) {
   tiles.appendChild(tile(fmtNum(v.lookups + v.uploads + v.urlScans + v.rescans), 'virustotal requests',
     v.configured ? `quota today ${v.usedToday}/${v.dailyLimit}` : 'no VT_API_KEY'));
   if (me.isAdmin) tiles.appendChild(tile(fmtNum(d.healthChecksToday), 'health checks today', 'background model tests'));
-  statsPanel.appendChild(tiles);
+  statsPanel.insertBefore(tiles, details);
 
   const cols = el('div', 'stats__cols');
 
@@ -635,7 +646,7 @@ function renderStats(d) {
   legend.appendChild(el('span', 'chart__key chart__key--vt', 'virustotal'));
   abox.appendChild(legend);
   cols.appendChild(abox);
-  statsPanel.appendChild(cols);
+  content.appendChild(cols);
 
   const vbox = el('div', 'stats__box');
   vbox.appendChild(el('div', 'stats__boxtitle', 'virustotal'));
@@ -645,9 +656,9 @@ function renderStats(d) {
   [['malicious', vv.malicious, 'bad'], ['suspicious', vv.suspicious, 'warn'], ['clean', vv.clean, 'ok'], ['unrated', vv.unrated, '']]
     .forEach(([lbl, n, cls]) => verdictLine.appendChild(el('span', `vchip ${cls ? `vchip--${cls}` : ''}`, `${lbl} ${n || 0}`)));
   vbox.appendChild(verdictLine);
-  statsPanel.appendChild(vbox);
+  content.appendChild(vbox);
 
-  statsPanel.appendChild(el('p', 'stats__note dim',
+  content.appendChild(el('p', 'stats__note dim',
     'stored only in data/stats.json on the hub: model, timings, sizes and counts. never message text, filenames or files.'));
 }
 
