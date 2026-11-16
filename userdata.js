@@ -7,7 +7,8 @@ const crypto = require('crypto');
 
 const PERF_KEYS = ['health', 'ttfb', 'total', 'tps', 'ctx', 'tokens', 'avgTtfb', 'session'];
 const DEFAULT_PERF = { health: true, ttfb: true, total: true, tps: true, ctx: true, tokens: false, avgTtfb: false, session: false };
-const DEFAULT_SETTINGS = { saveHistory: true, fullWidth: true, perf: DEFAULT_PERF };
+const THEME_KEYS = ['amber', 'green', 'ice', 'violet'];
+const DEFAULT_SETTINGS = { saveHistory: true, fullWidth: true, theme: 'amber', perf: DEFAULT_PERF };
 
 const MAX_MSGS = 200;
 const MAX_CONTENT = 50000;
@@ -83,6 +84,7 @@ function create(dir, validModelIds, db = null) {
   const withDefaults = (s) => ({
     ...DEFAULT_SETTINGS,
     ...s,
+    theme: THEME_KEYS.includes(s && s.theme) ? s.theme : 'amber',
     perf: { ...DEFAULT_PERF, ...(s && s.perf) },
   });
 
@@ -91,6 +93,7 @@ function create(dir, validModelIds, db = null) {
     if (!p || typeof p !== 'object') return out;
     if (typeof p.saveHistory === 'boolean') out.saveHistory = p.saveHistory;
     if (typeof p.fullWidth === 'boolean') out.fullWidth = p.fullWidth;
+    if (THEME_KEYS.includes(p.theme)) out.theme = p.theme;
     if (p.perf && typeof p.perf === 'object') {
       out.perf = {};
       for (const k of PERF_KEYS) if (typeof p.perf[k] === 'boolean') out.perf[k] = p.perf[k];
