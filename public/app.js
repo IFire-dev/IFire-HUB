@@ -27,7 +27,7 @@ const PERF_DEFS = [
   { key: 'session', label: 'requests and errors (this session)' },
 ];
 const DEFAULT_PERF = { health: true, ttfb: true, total: true, tps: true, ctx: true, tokens: false, avgTtfb: false, session: false };
-const THEMES = ['amber', 'green', 'ice', 'violet'];
+const THEMES = ['amber', 'green', 'ice', 'violet', 'white'];
 
 // ---------- elements ----------
 const $ = (id) => document.getElementById(id);

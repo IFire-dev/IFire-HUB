@@ -48,6 +48,42 @@ body[data-theme="violet"] {
   --text-dim: #a18bb6;
 }
 
+body[data-theme="white"] {
+  --bg: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-panel-2: #ffffff;
+  --amber: #000000;
+  --amber-bright: #000000;
+  --amber-dim: #000000;
+  --amber-faint: #000000;
+  --text: #000000;
+  --text-dim: #000000;
+  --danger: #000000;
+  --warn: #000000;
+  --ok: #000000;
+}
+
+body[data-theme="white"]::before,
+body[data-theme="white"]::after { display: none; }
+body[data-theme="white"] .grid-view__head h1,
+body[data-theme="white"] .login__title { text-shadow: none; }
+body[data-theme="white"] .btn--danger,
+body[data-theme="white"] .btn--danger:hover,
+body[data-theme="white"] .msg--error,
+body[data-theme="white"] .msg__body pre.code,
+body[data-theme="white"] .vt-verdict--malicious,
+body[data-theme="white"] .vt-verdict--suspicious,
+body[data-theme="white"] .vt-verdict--clean,
+body[data-theme="white"] .vchip--bad,
+body[data-theme="white"] .vchip--warn,
+body[data-theme="white"] .vchip--ok {
+  color: #000000;
+  border-color: #000000;
+  background: #ffffff;
+}
+body[data-theme="white"] .chart__bar--vt,
+body[data-theme="white"] .chart__key--vt::before { background: #000000; }
+
 * { box-sizing: border-box; }
 
 html, body {
